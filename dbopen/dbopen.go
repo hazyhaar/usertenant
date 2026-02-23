@@ -6,7 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // Options configures how a database is opened.
@@ -78,7 +78,7 @@ func Open(path string, opts ...Option) (*sql.DB, error) {
 		dsn += "?mode=ro"
 	}
 
-	db, err := sql.Open("sqlite3", dsn)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("dbopen: open %s: %w", path, err)
 	}
