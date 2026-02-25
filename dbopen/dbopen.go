@@ -74,33 +74,26 @@ func Open(path string, opts ...Option) (*sql.DB, error) {
 		fn(&o)
 	}
 
-	dsn := path
+	// Build DSN with _txlock=immediate and _pragma= for all production pragmas.
+	// _pragma= is applied per-connection by the modernc driver — critical because
+	// database/sql pools connections, and post-Open db.Exec("PRAGMA ...") only
+	// hits one connection (other connections get no busy_timeout → instant SQLITE_BUSY).
+	dsn := path + "?_txlock=immediate"
+	dsn += fmt.Sprintf("&_pragma=busy_timeout(%d)", o.BusyTimeout)
+	dsn += fmt.Sprintf("&_pragma=journal_mode(%s)", o.JournalMode)
+	if o.ForeignKeys {
+		dsn += "&_pragma=foreign_keys(1)"
+	}
 	if o.ReadOnly {
-		dsn += "?mode=ro"
+		dsn += "&mode=ro&_pragma=query_only(1)"
+	}
+	for _, p := range o.ExtraPragmas {
+		dsn += "&_pragma=" + p
 	}
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("dbopen: open %s: %w", path, err)
-	}
-
-	pragmas := []string{
-		fmt.Sprintf("PRAGMA busy_timeout = %d", o.BusyTimeout),
-		fmt.Sprintf("PRAGMA journal_mode = %s", o.JournalMode),
-	}
-	if o.ForeignKeys {
-		pragmas = append(pragmas, "PRAGMA foreign_keys = ON")
-	}
-	if o.ReadOnly {
-		pragmas = append(pragmas, "PRAGMA query_only = ON")
-	}
-	pragmas = append(pragmas, o.ExtraPragmas...)
-
-	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("dbopen: pragma %q on %s: %w", p, path, err)
-		}
 	}
 
 	return db, nil
