@@ -1,3 +1,4 @@
+// CLAUDE:SUMMARY Catalog reload with snapshot diffing and polling Watch loop via PRAGMA data_version.
 package tenant
 
 import (
@@ -15,23 +16,23 @@ import (
 // are created lazily on the next Resolve().
 func (p *Pool) Reload(ctx context.Context) error {
 	rows, err := p.catalogDB.QueryContext(ctx,
-		`SELECT user_id, space_id, name, strategy, endpoint, config, status, size_bytes, created_at, updated_at
+		`SELECT id, owner_id, name, strategy, endpoint, config, status, size_bytes, created_at, updated_at
 		 FROM shards`)
 	if err != nil {
 		return fmt.Errorf("tenant: reload query: %w", err)
 	}
 	defer rows.Close()
 
-	newSnap := make(map[shardKey]shard)
+	newSnap := make(map[string]shard)
 	for rows.Next() {
 		var s shard
 		var configStr string
-		if err := rows.Scan(&s.UserID, &s.SpaceID, &s.Name, &s.Strategy, &s.Endpoint,
+		if err := rows.Scan(&s.ID, &s.OwnerID, &s.Name, &s.Strategy, &s.Endpoint,
 			&configStr, &s.Status, &s.SizeBytes, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			return fmt.Errorf("tenant: reload scan: %w", err)
 		}
 		s.Config = json.RawMessage(configStr)
-		newSnap[shardKey{UserID: s.UserID, SpaceID: s.SpaceID}] = s
+		newSnap[s.ID] = s
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("tenant: reload rows: %w", err)
@@ -46,7 +47,7 @@ func (p *Pool) Reload(ctx context.Context) error {
 		if !exists {
 			// Shard removed from catalog.
 			p.logger.Debug("tenant: shard removed, closing connection",
-				"user_id", key.UserID, "space_id", key.SpaceID)
+				"dossier_id", key)
 			p.closeEntryLocked(key)
 			continue
 		}
@@ -56,7 +57,7 @@ func (p *Pool) Reload(ctx context.Context) error {
 			// Fingerprint changed — close old connection so next Resolve
 			// rebuilds with the new factory/config.
 			p.logger.Debug("tenant: shard changed, closing connection",
-				"user_id", key.UserID, "space_id", key.SpaceID,
+				"dossier_id", key,
 				"old_strategy", e.strategy, "new_strategy", newShard.Strategy)
 			p.closeEntryLocked(key)
 		}

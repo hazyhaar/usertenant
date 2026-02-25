@@ -1,3 +1,4 @@
+// CLAUDE:SUMMARY Background goroutine that evicts idle shard connections exceeding the timeout.
 package tenant
 
 import "time"
@@ -41,7 +42,7 @@ func (p *Pool) reap() {
 		idle := now - e.lastUsed.Load()
 		if idle > threshold {
 			p.logger.Debug("tenant: reaping idle shard",
-				"user_id", key.UserID, "space_id", key.SpaceID,
+				"dossier_id", key,
 				"idle_ms", idle)
 			p.closeEntryLocked(key)
 			p.evictions.Add(1)

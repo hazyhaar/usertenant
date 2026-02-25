@@ -1,3 +1,4 @@
+// CLAUDE:SUMMARY Polling watcher that detects SQLite changes via PRAGMA data_version and fires a callback.
 // Package watch provides a polling watcher that monitors SQLite databases
 // for changes using PRAGMA data_version. When data_version changes (meaning
 // another connection modified the database), the watcher calls a user-provided

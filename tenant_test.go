@@ -16,8 +16,8 @@ import (
 	"github.com/hazyhaar/usertenant/dbopen"
 )
 
-// testCatalog creates a temporary directory and an in-memory catalog database
-// initialized with the schema. Returns (dataDir, catalogDB, cleanup).
+// testCatalog creates a temporary directory and a catalog database
+// initialized with the schema. Returns (dataDir, catalogDB).
 func testCatalog(t *testing.T) (string, *sql.DB) {
 	t.Helper()
 	dataDir := t.TempDir()
@@ -36,19 +36,21 @@ func testCatalog(t *testing.T) (string, *sql.DB) {
 	return dataDir, db
 }
 
-func insertShard(t *testing.T, db *sql.DB, userID, spaceID, strategy string) {
+func insertShard(t *testing.T, db *sql.DB, dossierID, strategy string) {
 	t.Helper()
 	now := time.Now().UnixMilli()
 	_, err := db.Exec(
-		`INSERT INTO shards (user_id, space_id, name, strategy, endpoint, config, status, size_bytes, created_at, updated_at)
-		 VALUES (?, ?, '', ?, '', '{}', 'active', 0, ?, ?)`,
-		userID, spaceID, strategy, now, now)
+		`INSERT INTO shards (id, owner_id, name, strategy, endpoint, config, status, size_bytes, created_at, updated_at)
+		 VALUES (?, '', '', ?, '', '{}', 'active', 0, ?, ?)`,
+		dossierID, strategy, now, now)
 	if err != nil {
 		t.Fatalf("insert shard: %v", err)
 	}
 }
 
 func TestInitCatalog(t *testing.T) {
+	// WHAT: InitCatalog creates the shards table.
+	// WHY: Catalog schema is required for all pool operations.
 	dataDir := t.TempDir()
 	db, err := dbopen.Open(filepath.Join(dataDir, "test.db"))
 	if err != nil {
@@ -60,15 +62,11 @@ func TestInitCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Verify tables exist.
+	// Verify shards table exists.
 	var name string
 	err = db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='shards'").Scan(&name)
 	if err != nil {
 		t.Fatalf("shards table not found: %v", err)
-	}
-	err = db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").Scan(&name)
-	if err != nil {
-		t.Fatalf("users table not found: %v", err)
 	}
 
 	// Idempotent: calling again should not error.
@@ -78,6 +76,8 @@ func TestInitCatalog(t *testing.T) {
 }
 
 func TestPoolNewAndClose(t *testing.T) {
+	// WHAT: Pool creation and graceful shutdown.
+	// WHY: Lifecycle must be clean (no leaks).
 	dataDir, catalogDB := testCatalog(t)
 
 	pool, err := New(dataDir, catalogDB, WithIdleTimeout(time.Minute), WithMaxOpen(10))
@@ -95,15 +95,17 @@ func TestPoolNewAndClose(t *testing.T) {
 	}
 
 	// Operations after close should fail.
-	_, err = pool.Resolve(context.Background(), "user1", "space1")
+	_, err = pool.Resolve(context.Background(), "nonexistent")
 	if !errors.Is(err, ErrPoolClosed) {
 		t.Errorf("expected ErrPoolClosed, got %v", err)
 	}
 }
 
-func TestResolveLocal(t *testing.T) {
+func TestResolve_ByDossierID(t *testing.T) {
+	// WHAT: Resolve returns a DB for a known dossierID.
+	// WHY: Core routing — dossierID is the universal key.
 	dataDir, catalogDB := testCatalog(t)
-	insertShard(t, catalogDB, "user1", "space1", "local")
+	insertShard(t, catalogDB, "dossier-001", "local")
 
 	pool, err := New(dataDir, catalogDB)
 	if err != nil {
@@ -111,12 +113,7 @@ func TestResolveLocal(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Reload to pick up the inserted shard.
-	if err := pool.Reload(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	db, err := pool.Resolve(context.Background(), "user1", "space1")
+	db, err := pool.Resolve(context.Background(), "dossier-001")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -124,14 +121,14 @@ func TestResolveLocal(t *testing.T) {
 		t.Fatal("expected non-nil db")
 	}
 
-	// Verify the .db file was created.
-	path := filepath.Join(dataDir, "user1", "space1.db")
+	// Verify the .db file was created (flat layout).
+	path := filepath.Join(dataDir, "dossier-001.db")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected .db file at %s: %v", path, err)
 	}
 
 	// Second resolve should hit cache.
-	db2, err := pool.Resolve(context.Background(), "user1", "space1")
+	db2, err := pool.Resolve(context.Background(), "dossier-001")
 	if err != nil {
 		t.Fatalf("second resolve: %v", err)
 	}
@@ -148,7 +145,9 @@ func TestResolveLocal(t *testing.T) {
 	}
 }
 
-func TestResolveNotFound(t *testing.T) {
+func TestResolve_NotFound(t *testing.T) {
+	// WHAT: Resolve on unknown dossierID returns ErrShardNotFound.
+	// WHY: Unknown dossierIDs must fail cleanly.
 	dataDir, catalogDB := testCatalog(t)
 
 	pool, err := New(dataDir, catalogDB)
@@ -157,15 +156,42 @@ func TestResolveNotFound(t *testing.T) {
 	}
 	defer pool.Close()
 
-	_, err = pool.Resolve(context.Background(), "nonexistent", "space")
-	if !errors.Is(err, ErrSpaceNotFound) {
-		t.Errorf("expected ErrSpaceNotFound, got %v", err)
+	_, err = pool.Resolve(context.Background(), "nonexistent")
+	if !errors.Is(err, ErrShardNotFound) {
+		t.Errorf("expected ErrShardNotFound, got %v", err)
+	}
+}
+
+func TestResolve_Deleted(t *testing.T) {
+	// WHAT: Resolve on deleted shard returns ErrShardDeleted.
+	// WHY: Deleted shards must be inaccessible.
+	dataDir, catalogDB := testCatalog(t)
+
+	now := time.Now().UnixMilli()
+	_, err := catalogDB.Exec(
+		`INSERT INTO shards (id, owner_id, name, strategy, endpoint, config, status, size_bytes, created_at, updated_at)
+		 VALUES ('del-001', '', '', 'local', '', '{}', 'deleted', 0, ?, ?)`, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pool, err := New(dataDir, catalogDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	_, err = pool.Resolve(context.Background(), "del-001")
+	if !errors.Is(err, ErrShardDeleted) {
+		t.Errorf("expected ErrShardDeleted, got %v", err)
 	}
 }
 
 func TestResolveNoop(t *testing.T) {
+	// WHAT: Resolve on noop strategy returns ErrFactoryFailed.
+	// WHY: Disabled shards should fail at factory level.
 	dataDir, catalogDB := testCatalog(t)
-	insertShard(t, catalogDB, "user1", "space1", "noop")
+	insertShard(t, catalogDB, "noop-001", "noop")
 
 	pool, err := New(dataDir, catalogDB)
 	if err != nil {
@@ -173,19 +199,17 @@ func TestResolveNoop(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if err := pool.Reload(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = pool.Resolve(context.Background(), "user1", "space1")
+	_, err = pool.Resolve(context.Background(), "noop-001")
 	if !errors.Is(err, ErrFactoryFailed) {
-		t.Errorf("expected ErrFactoryFailed wrapping ErrSpaceUnavailable, got %v", err)
+		t.Errorf("expected ErrFactoryFailed, got %v", err)
 	}
 }
 
 func TestResolveUnknownStrategy(t *testing.T) {
+	// WHAT: Resolve with unknown strategy returns ErrFactoryNotFound.
+	// WHY: Missing factories must be reported.
 	dataDir, catalogDB := testCatalog(t)
-	insertShard(t, catalogDB, "user1", "space1", "quantum")
+	insertShard(t, catalogDB, "quantum-001", "quantum")
 
 	pool, err := New(dataDir, catalogDB)
 	if err != nil {
@@ -193,23 +217,158 @@ func TestResolveUnknownStrategy(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if err := pool.Reload(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = pool.Resolve(context.Background(), "user1", "space1")
+	_, err = pool.Resolve(context.Background(), "quantum-001")
 	if !errors.Is(err, ErrFactoryNotFound) {
 		t.Errorf("expected ErrFactoryNotFound, got %v", err)
 	}
 }
 
-func TestMaxOpenEviction(t *testing.T) {
+func TestCreateShard_And_Resolve(t *testing.T) {
+	// WHAT: CreateShard then Resolve returns a working DB.
+	// WHY: Full create→resolve lifecycle.
 	dataDir, catalogDB := testCatalog(t)
 
-	// Insert 3 shards, pool max is 2.
-	insertShard(t, catalogDB, "user1", "s1", "local")
-	insertShard(t, catalogDB, "user1", "s2", "local")
-	insertShard(t, catalogDB, "user1", "s3", "local")
+	pool, err := New(dataDir, catalogDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	if err := pool.CreateShard(ctx, "dossier-a", "owner-1", "My Dossier"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := pool.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := pool.Resolve(ctx, "dossier-a")
+	if err != nil {
+		t.Fatalf("resolve after create: %v", err)
+	}
+	if db == nil {
+		t.Fatal("expected non-nil db")
+	}
+
+	// Verify the flat path.
+	path := filepath.Join(dataDir, "dossier-a.db")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected .db file at %s: %v", path, err)
+	}
+}
+
+func TestDeleteShard(t *testing.T) {
+	// WHAT: DeleteShard soft-deletes and removes the file.
+	// WHY: Deletion must be clean (no orphaned files).
+	dataDir, catalogDB := testCatalog(t)
+
+	pool, err := New(dataDir, catalogDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	// Create, reload, resolve (creates the file).
+	if err := pool.CreateShard(ctx, "dossier-del", "owner-1", "Delete Me"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Resolve(ctx, "dossier-del"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete.
+	if err := pool.DeleteShard(ctx, "dossier-del"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resolve should fail.
+	_, err = pool.Resolve(ctx, "dossier-del")
+	if !errors.Is(err, ErrShardDeleted) {
+		t.Errorf("expected ErrShardDeleted, got %v", err)
+	}
+
+	// .db file should be removed.
+	path := filepath.Join(dataDir, "dossier-del.db")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("expected .db file to be removed, stat: %v", err)
+	}
+}
+
+func TestDeleteShard_NotFound(t *testing.T) {
+	// WHAT: DeleteShard on unknown dossierID returns ErrShardNotFound.
+	// WHY: Deleting nonexistent shards must fail cleanly.
+	dataDir, catalogDB := testCatalog(t)
+
+	pool, err := New(dataDir, catalogDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	err = pool.DeleteShard(context.Background(), "ghost")
+	if !errors.Is(err, ErrShardNotFound) {
+		t.Errorf("expected ErrShardNotFound, got %v", err)
+	}
+}
+
+func TestSetStrategy(t *testing.T) {
+	// WHAT: SetStrategy changes a shard's routing strategy.
+	// WHY: Strategy changes must persist and be detected by reload.
+	dataDir, catalogDB := testCatalog(t)
+
+	pool, err := New(dataDir, catalogDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	if err := pool.CreateShard(ctx, "dossier-strat", "owner-1", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := pool.SetStrategy(ctx, "dossier-strat", "readonly", "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var strategy string
+	err = catalogDB.QueryRow("SELECT strategy FROM shards WHERE id = 'dossier-strat'").Scan(&strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strategy != "readonly" {
+		t.Errorf("expected strategy 'readonly', got %q", strategy)
+	}
+
+	// SetStrategy on nonexistent shard should fail.
+	err = pool.SetStrategy(ctx, "ghost", "local", "", nil)
+	if !errors.Is(err, ErrShardNotFound) {
+		t.Errorf("expected ErrShardNotFound, got %v", err)
+	}
+}
+
+func TestMaxOpenEviction(t *testing.T) {
+	// WHAT: When maxOpen is reached, the oldest connection is evicted.
+	// WHY: Pool must respect connection limits.
+	dataDir, catalogDB := testCatalog(t)
+
+	insertShard(t, catalogDB, "s1", "local")
+	insertShard(t, catalogDB, "s2", "local")
+	insertShard(t, catalogDB, "s3", "local")
 
 	pool, err := New(dataDir, catalogDB, WithMaxOpen(2), WithIdleTimeout(time.Hour))
 	if err != nil {
@@ -217,22 +376,17 @@ func TestMaxOpenEviction(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if err := pool.Reload(context.Background()); err != nil {
+	if _, err := pool.Resolve(context.Background(), "s1"); err != nil {
 		t.Fatal(err)
 	}
-
-	// Open first two.
-	if _, err := pool.Resolve(context.Background(), "user1", "s1"); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(time.Millisecond) // Ensure different lastUsed times.
-	if _, err := pool.Resolve(context.Background(), "user1", "s2"); err != nil {
+	time.Sleep(time.Millisecond)
+	if _, err := pool.Resolve(context.Background(), "s2"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Third should evict the oldest (s1).
 	time.Sleep(time.Millisecond)
-	if _, err := pool.Resolve(context.Background(), "user1", "s3"); err != nil {
+	if _, err := pool.Resolve(context.Background(), "s3"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -246,8 +400,10 @@ func TestMaxOpenEviction(t *testing.T) {
 }
 
 func TestReloadDiff(t *testing.T) {
+	// WHAT: Reload detects fingerprint changes and closes stale connections.
+	// WHY: Hot-reload must rebuild connections on config change.
 	dataDir, catalogDB := testCatalog(t)
-	insertShard(t, catalogDB, "user1", "space1", "local")
+	insertShard(t, catalogDB, "dossier-diff", "local")
 
 	pool, err := New(dataDir, catalogDB)
 	if err != nil {
@@ -255,8 +411,7 @@ func TestReloadDiff(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Resolve to open a connection.
-	db1, err := pool.Resolve(context.Background(), "user1", "space1")
+	db1, err := pool.Resolve(context.Background(), "dossier-diff")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,19 +419,16 @@ func TestReloadDiff(t *testing.T) {
 	// Change the strategy in the catalog.
 	now := time.Now().UnixMilli()
 	_, err = catalogDB.Exec(
-		`UPDATE shards SET strategy = 'readonly', updated_at = ? WHERE user_id = 'user1' AND space_id = 'space1'`,
-		now)
+		`UPDATE shards SET strategy = 'readonly', updated_at = ? WHERE id = 'dossier-diff'`, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Reload should detect the change and close the old connection.
 	if err := pool.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
-	// Resolve again should return a different connection.
-	db2, err := pool.Resolve(context.Background(), "user1", "space1")
+	db2, err := pool.Resolve(context.Background(), "dossier-diff")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,9 +437,10 @@ func TestReloadDiff(t *testing.T) {
 	}
 }
 
-func TestReloadRemovesShard(t *testing.T) {
+func TestReload_PicksUpNewShards(t *testing.T) {
+	// WHAT: Reload detects shards added after pool creation.
+	// WHY: Hot-reload must discover new shards.
 	dataDir, catalogDB := testCatalog(t)
-	insertShard(t, catalogDB, "user1", "space1", "local")
 
 	pool, err := New(dataDir, catalogDB)
 	if err != nil {
@@ -295,17 +448,49 @@ func TestReloadRemovesShard(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Open connection.
-	if _, err := pool.Resolve(context.Background(), "user1", "space1"); err != nil {
+	// Initially no shards.
+	_, err = pool.Resolve(context.Background(), "new-shard")
+	if !errors.Is(err, ErrShardNotFound) {
+		t.Fatalf("expected ErrShardNotFound, got %v", err)
+	}
+
+	// Insert directly into catalog.
+	insertShard(t, catalogDB, "new-shard", "local")
+
+	if err := pool.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
-	// Remove the shard from catalog.
-	if _, err := catalogDB.Exec("DELETE FROM shards WHERE user_id = 'user1' AND space_id = 'space1'"); err != nil {
+	// Now it should resolve.
+	db, err := pool.Resolve(context.Background(), "new-shard")
+	if err != nil {
+		t.Fatalf("resolve after reload: %v", err)
+	}
+	if db == nil {
+		t.Fatal("expected non-nil db")
+	}
+}
+
+func TestReloadRemovesShard(t *testing.T) {
+	// WHAT: Removing a shard from catalog closes its connection.
+	// WHY: Catalog is authoritative — removed shards must be inaccessible.
+	dataDir, catalogDB := testCatalog(t)
+	insertShard(t, catalogDB, "removable", "local")
+
+	pool, err := New(dataDir, catalogDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	if _, err := pool.Resolve(context.Background(), "removable"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Reload should close the connection.
+	if _, err := catalogDB.Exec("DELETE FROM shards WHERE id = 'removable'"); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := pool.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -315,133 +500,38 @@ func TestReloadRemovesShard(t *testing.T) {
 		t.Errorf("expected 0 open conns after removal, got %d", stats.OpenConns)
 	}
 
-	// Resolve should now fail.
-	_, err = pool.Resolve(context.Background(), "user1", "space1")
-	if !errors.Is(err, ErrSpaceNotFound) {
-		t.Errorf("expected ErrSpaceNotFound, got %v", err)
+	_, err = pool.Resolve(context.Background(), "removable")
+	if !errors.Is(err, ErrShardNotFound) {
+		t.Errorf("expected ErrShardNotFound, got %v", err)
 	}
 }
 
-func TestCreateAndDeleteSpace(t *testing.T) {
-	dataDir, catalogDB := testCatalog(t)
+func TestLocalFactory_FlatPath(t *testing.T) {
+	// WHAT: localFactory creates files at {dataDir}/{dossierID}.db (flat).
+	// WHY: No more user subdirectories — flat layout is the new convention.
+	dataDir := t.TempDir()
 
-	pool, err := New(dataDir, catalogDB)
+	db, closeFn, err := localFactory(dataDir, "my-dossier-id", "", nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("localFactory: %v", err)
 	}
-	defer pool.Close()
+	defer closeFn()
 
-	ctx := context.Background()
-
-	// Create.
-	if err := pool.CreateSpace(ctx, "user1", "space1", "My Space"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Reload to pick up the change.
-	if err := pool.Reload(ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	// Resolve should work.
-	db, err := pool.Resolve(ctx, "user1", "space1")
-	if err != nil {
-		t.Fatalf("resolve after create: %v", err)
-	}
 	if db == nil {
 		t.Fatal("expected non-nil db")
 	}
 
-	// Delete.
-	if err := pool.DeleteSpace(ctx, "user1", "space1"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Reload to pick up deletion.
-	if err := pool.Reload(ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	// Resolve should fail with deleted status.
-	_, err = pool.Resolve(ctx, "user1", "space1")
-	if !errors.Is(err, ErrSpaceDeleted) {
-		t.Errorf("expected ErrSpaceDeleted, got %v", err)
-	}
-
-	// .db file should be removed.
-	path := filepath.Join(dataDir, "user1", "space1.db")
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("expected .db file to be removed, stat: %v", err)
-	}
-}
-
-func TestSetStrategy(t *testing.T) {
-	dataDir, catalogDB := testCatalog(t)
-
-	pool, err := New(dataDir, catalogDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-
-	ctx := context.Background()
-
-	// Create a space.
-	if err := pool.CreateSpace(ctx, "user1", "space1", "test"); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.Reload(ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	// Change strategy.
-	if err := pool.SetStrategy(ctx, "user1", "space1", "readonly", "", nil); err != nil {
-		t.Fatal(err)
-	}
-
-	// Verify in DB.
-	var strategy string
-	err = catalogDB.QueryRow("SELECT strategy FROM shards WHERE user_id = 'user1' AND space_id = 'space1'").Scan(&strategy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strategy != "readonly" {
-		t.Errorf("expected strategy 'readonly', got %q", strategy)
-	}
-
-	// SetStrategy on nonexistent shard should fail.
-	err = pool.SetStrategy(ctx, "ghost", "space", "local", "", nil)
-	if !errors.Is(err, ErrSpaceNotFound) {
-		t.Errorf("expected ErrSpaceNotFound, got %v", err)
-	}
-}
-
-func TestCreateUser(t *testing.T) {
-	_, catalogDB := testCatalog(t)
-
-	pool, err := New(t.TempDir(), catalogDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-
-	if err := pool.CreateUser(context.Background(), "u1", "Alice"); err != nil {
-		t.Fatal(err)
-	}
-
-	var name string
-	err = catalogDB.QueryRow("SELECT name FROM users WHERE id = 'u1'").Scan(&name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if name != "Alice" {
-		t.Errorf("expected name 'Alice', got %q", name)
+	path := filepath.Join(dataDir, "my-dossier-id.db")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected file at %s: %v", path, err)
 	}
 }
 
 func TestRegisterFactory(t *testing.T) {
+	// WHAT: Custom factory is called on resolve.
+	// WHY: Extensibility via factory registration.
 	dataDir, catalogDB := testCatalog(t)
-	insertShard(t, catalogDB, "user1", "space1", "custom")
+	insertShard(t, catalogDB, "custom-001", "custom")
 
 	pool, err := New(dataDir, catalogDB)
 	if err != nil {
@@ -450,17 +540,16 @@ func TestRegisterFactory(t *testing.T) {
 	defer pool.Close()
 
 	called := false
-	pool.RegisterFactory("custom", func(dataDir, userID, spaceID, endpoint string, config json.RawMessage) (*sql.DB, func(), error) {
+	pool.RegisterFactory("custom", func(dataDir, dossierID, endpoint string, config json.RawMessage) (*sql.DB, func(), error) {
 		called = true
-		// Use local factory under the hood for testing.
-		return localFactory(dataDir, userID, spaceID, endpoint, config)
+		return localFactory(dataDir, dossierID, endpoint, config)
 	})
 
 	if err := pool.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
-	db, err := pool.Resolve(context.Background(), "user1", "space1")
+	db, err := pool.Resolve(context.Background(), "custom-001")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,8 +562,10 @@ func TestRegisterFactory(t *testing.T) {
 }
 
 func TestReaper(t *testing.T) {
+	// WHAT: Idle connections are reaped after timeout.
+	// WHY: Prevents resource leaks from abandoned shards.
 	dataDir, catalogDB := testCatalog(t)
-	insertShard(t, catalogDB, "user1", "space1", "local")
+	insertShard(t, catalogDB, "reap-001", "local")
 
 	pool, err := New(dataDir, catalogDB, WithIdleTimeout(50*time.Millisecond))
 	if err != nil {
@@ -482,12 +573,7 @@ func TestReaper(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if err := pool.Reload(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	// Resolve to open a connection.
-	if _, err := pool.Resolve(context.Background(), "user1", "space1"); err != nil {
+	if _, err := pool.Resolve(context.Background(), "reap-001"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -495,7 +581,7 @@ func TestReaper(t *testing.T) {
 		t.Fatalf("expected 1 open conn, got %d", stats.OpenConns)
 	}
 
-	// Wait for reaper to run (idleTimeout + reaper interval).
+	// Wait for reaper.
 	time.Sleep(200 * time.Millisecond)
 
 	if stats := pool.Stats(); stats.OpenConns != 0 {
@@ -503,49 +589,13 @@ func TestReaper(t *testing.T) {
 	}
 }
 
-func TestDeleteSpaceNotFound(t *testing.T) {
-	dataDir, catalogDB := testCatalog(t)
-
-	pool, err := New(dataDir, catalogDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-
-	err = pool.DeleteSpace(context.Background(), "ghost", "space")
-	if !errors.Is(err, ErrSpaceNotFound) {
-		t.Errorf("expected ErrSpaceNotFound, got %v", err)
-	}
-}
-
-func TestResolveDeletedShard(t *testing.T) {
-	dataDir, catalogDB := testCatalog(t)
-
-	now := time.Now().UnixMilli()
-	_, err := catalogDB.Exec(
-		`INSERT INTO shards (user_id, space_id, name, strategy, endpoint, config, status, size_bytes, created_at, updated_at)
-		 VALUES ('u1', 's1', '', 'local', '', '{}', 'deleted', 0, ?, ?)`, now, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	pool, err := New(dataDir, catalogDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-
-	_, err = pool.Resolve(context.Background(), "u1", "s1")
-	if !errors.Is(err, ErrSpaceDeleted) {
-		t.Errorf("expected ErrSpaceDeleted, got %v", err)
-	}
-}
-
 func TestMultipleShards(t *testing.T) {
+	// WHAT: Multiple shards resolve independently.
+	// WHY: Multi-tenant isolation.
 	dataDir, catalogDB := testCatalog(t)
 
 	for i := 0; i < 5; i++ {
-		insertShard(t, catalogDB, "user1", "space"+string(rune('a'+i)), "local")
+		insertShard(t, catalogDB, "dossier-"+string(rune('a'+i)), "local")
 	}
 
 	pool, err := New(dataDir, catalogDB, WithMaxOpen(10))
@@ -554,18 +604,14 @@ func TestMultipleShards(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if err := pool.Reload(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
 	for i := 0; i < 5; i++ {
-		spaceID := "space" + string(rune('a'+i))
-		db, err := pool.Resolve(context.Background(), "user1", spaceID)
+		id := "dossier-" + string(rune('a'+i))
+		db, err := pool.Resolve(context.Background(), id)
 		if err != nil {
-			t.Fatalf("resolve %s: %v", spaceID, err)
+			t.Fatalf("resolve %s: %v", id, err)
 		}
 		if db == nil {
-			t.Fatalf("nil db for %s", spaceID)
+			t.Fatalf("nil db for %s", id)
 		}
 	}
 
@@ -573,14 +619,13 @@ func TestMultipleShards(t *testing.T) {
 	if stats.OpenConns != 5 {
 		t.Errorf("expected 5 open conns, got %d", stats.OpenConns)
 	}
-	if stats.CacheMisses != 5 {
-		t.Errorf("expected 5 misses, got %d", stats.CacheMisses)
-	}
 }
 
-// Admin handler tests
+// --- Admin handler tests ---
 
 func TestAdminStats(t *testing.T) {
+	// WHAT: GET /pool/stats returns JSON stats.
+	// WHY: Observability endpoint.
 	dataDir, catalogDB := testCatalog(t)
 
 	pool, err := New(dataDir, catalogDB)
@@ -605,9 +650,11 @@ func TestAdminStats(t *testing.T) {
 }
 
 func TestAdminListShards(t *testing.T) {
+	// WHAT: GET /shards returns all shards.
+	// WHY: Admin must see all shards.
 	dataDir, catalogDB := testCatalog(t)
-	insertShard(t, catalogDB, "user1", "space1", "local")
-	insertShard(t, catalogDB, "user2", "space2", "local")
+	insertShard(t, catalogDB, "d1", "local")
+	insertShard(t, catalogDB, "d2", "local")
 
 	pool, err := New(dataDir, catalogDB)
 	if err != nil {
@@ -616,8 +663,6 @@ func TestAdminListShards(t *testing.T) {
 	defer pool.Close()
 
 	handler := AdminHandler(pool)
-
-	// List all.
 	req := httptest.NewRequest("GET", "/shards", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -635,11 +680,11 @@ func TestAdminListShards(t *testing.T) {
 	}
 }
 
-func TestAdminListShardsByUser(t *testing.T) {
+func TestAdminGetShard(t *testing.T) {
+	// WHAT: GET /shards/{dossierID} returns a single shard.
+	// WHY: Admin must be able to inspect one shard.
 	dataDir, catalogDB := testCatalog(t)
-	insertShard(t, catalogDB, "user1", "space1", "local")
-	insertShard(t, catalogDB, "user1", "space2", "local")
-	insertShard(t, catalogDB, "user2", "space3", "local")
+	insertShard(t, catalogDB, "inspect-me", "local")
 
 	pool, err := New(dataDir, catalogDB)
 	if err != nil {
@@ -648,8 +693,7 @@ func TestAdminListShardsByUser(t *testing.T) {
 	defer pool.Close()
 
 	handler := AdminHandler(pool)
-
-	req := httptest.NewRequest("GET", "/shards/user1", nil)
+	req := httptest.NewRequest("GET", "/shards/inspect-me", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -657,18 +701,41 @@ func TestAdminListShardsByUser(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 
-	var shards []shard
-	if err := json.Unmarshal(w.Body.Bytes(), &shards); err != nil {
+	var s shard
+	if err := json.Unmarshal(w.Body.Bytes(), &s); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(shards) != 2 {
-		t.Errorf("expected 2 shards for user1, got %d", len(shards))
+	if s.ID != "inspect-me" {
+		t.Errorf("expected ID 'inspect-me', got %q", s.ID)
+	}
+}
+
+func TestAdminGetShard_NotFound(t *testing.T) {
+	// WHAT: GET /shards/{dossierID} returns 404 for unknown shard.
+	// WHY: Admin must get a clear signal for missing shards.
+	dataDir, catalogDB := testCatalog(t)
+
+	pool, err := New(dataDir, catalogDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	handler := AdminHandler(pool)
+	req := httptest.NewRequest("GET", "/shards/ghost", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
 	}
 }
 
 func TestAdminSetStrategy(t *testing.T) {
+	// WHAT: POST /shards/{dossierID}/strategy updates strategy.
+	// WHY: Admin must be able to change routing strategy.
 	dataDir, catalogDB := testCatalog(t)
-	insertShard(t, catalogDB, "user1", "space1", "local")
+	insertShard(t, catalogDB, "strat-admin", "local")
 
 	pool, err := New(dataDir, catalogDB)
 	if err != nil {
@@ -679,7 +746,7 @@ func TestAdminSetStrategy(t *testing.T) {
 	handler := AdminHandler(pool)
 
 	body := `{"strategy": "readonly", "endpoint": ""}`
-	req := httptest.NewRequest("POST", "/shards/user1/space1/strategy", strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/shards/strat-admin/strategy", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -687,9 +754,8 @@ func TestAdminSetStrategy(t *testing.T) {
 		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Verify strategy changed.
 	var strategy string
-	err = catalogDB.QueryRow("SELECT strategy FROM shards WHERE user_id = 'user1' AND space_id = 'space1'").Scan(&strategy)
+	err = catalogDB.QueryRow("SELECT strategy FROM shards WHERE id = 'strat-admin'").Scan(&strategy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -699,6 +765,8 @@ func TestAdminSetStrategy(t *testing.T) {
 }
 
 func TestLifecycleFullCycle(t *testing.T) {
+	// WHAT: Full cycle: create → resolve → use → set strategy → delete.
+	// WHY: End-to-end lifecycle validation.
 	dataDir, catalogDB := testCatalog(t)
 
 	pool, err := New(dataDir, catalogDB, WithIdleTimeout(time.Hour))
@@ -709,45 +777,38 @@ func TestLifecycleFullCycle(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 1. Create user.
-	if err := pool.CreateUser(ctx, "user1", "Test User"); err != nil {
-		t.Fatal(err)
-	}
-
-	// 2. Create space.
-	if err := pool.CreateSpace(ctx, "user1", "space1", "Workspace"); err != nil {
+	// 1. Create shard.
+	if err := pool.CreateShard(ctx, "dossier-full", "owner-1", "Workspace"); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
 
-	// 3. Resolve and use.
-	db, err := pool.Resolve(ctx, "user1", "space1")
+	// 2. Resolve and use.
+	db, err := pool.Resolve(ctx, "dossier-full")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Create a table in the space to verify it's usable.
 	_, err = db.Exec("CREATE TABLE docs (id TEXT PRIMARY KEY, content TEXT)")
 	if err != nil {
-		t.Fatalf("create table in space: %v", err)
+		t.Fatalf("create table: %v", err)
 	}
 	_, err = db.Exec("INSERT INTO docs (id, content) VALUES ('d1', 'hello')")
 	if err != nil {
-		t.Fatalf("insert into space: %v", err)
+		t.Fatalf("insert: %v", err)
 	}
 
-	// 4. Set strategy to readonly.
-	if err := pool.SetStrategy(ctx, "user1", "space1", "readonly", "", nil); err != nil {
+	// 3. Set strategy to readonly.
+	if err := pool.SetStrategy(ctx, "dossier-full", "readonly", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
 
-	// Resolve again — should get a readonly connection.
-	db2, err := pool.Resolve(ctx, "user1", "space1")
+	db2, err := pool.Resolve(ctx, "dossier-full")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -768,17 +829,35 @@ func TestLifecycleFullCycle(t *testing.T) {
 		t.Error("expected error writing to readonly database")
 	}
 
-	// 5. Delete.
-	if err := pool.DeleteSpace(ctx, "user1", "space1"); err != nil {
+	// 4. Delete.
+	if err := pool.DeleteShard(ctx, "dossier-full"); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
 
-	// Should be deleted.
-	_, err = pool.Resolve(ctx, "user1", "space1")
-	if !errors.Is(err, ErrSpaceDeleted) {
-		t.Errorf("expected ErrSpaceDeleted, got %v", err)
+	_, err = pool.Resolve(ctx, "dossier-full")
+	if !errors.Is(err, ErrShardDeleted) {
+		t.Errorf("expected ErrShardDeleted, got %v", err)
+	}
+}
+
+// --- Legacy alias tests ---
+
+func TestLegacyAliases(t *testing.T) {
+	// WHAT: Old error names still work as aliases.
+	// WHY: Backward compatibility during migration.
+	if ErrSpaceNotFound != ErrShardNotFound {
+		t.Error("ErrSpaceNotFound should alias ErrShardNotFound")
+	}
+	if ErrSpaceDeleted != ErrShardDeleted {
+		t.Error("ErrSpaceDeleted should alias ErrShardDeleted")
+	}
+	if ErrSpaceArchived != ErrShardArchived {
+		t.Error("ErrSpaceArchived should alias ErrShardArchived")
+	}
+	if ErrSpaceUnavailable != ErrShardUnavailable {
+		t.Error("ErrSpaceUnavailable should alias ErrShardUnavailable")
 	}
 }

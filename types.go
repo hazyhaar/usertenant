@@ -1,3 +1,4 @@
+// CLAUDE:SUMMARY Core types: Pool struct, ShardFactory, shard metadata, connection entry, and functional options.
 package tenant
 
 import (
@@ -9,22 +10,15 @@ import (
 	"time"
 )
 
-// ShardFactory constructs a *sql.DB for a given shard. It receives the full
-// context needed to open the connection and returns the database handle along
-// with a close function. The close function is called when the pool evicts
-// or closes the connection.
-type ShardFactory func(dataDir, userID, spaceID, endpoint string, config json.RawMessage) (db *sql.DB, close func(), err error)
-
-// shardKey uniquely identifies a shard by user and space.
-type shardKey struct {
-	UserID  string
-	SpaceID string
-}
+// ShardFactory constructs a *sql.DB for a given shard identified by dossierID.
+// It receives the full context needed to open the connection and returns the
+// database handle along with a close function.
+type ShardFactory func(dataDir, dossierID, endpoint string, config json.RawMessage) (db *sql.DB, close func(), err error)
 
 // shard represents a row from the shards table in the catalog.
 type shard struct {
-	UserID    string
-	SpaceID   string
+	ID        string          // dossierID (UUID v7)
+	OwnerID   string          // audit only — who created this shard
 	Name      string
 	Strategy  string
 	Endpoint  string
@@ -61,16 +55,16 @@ type PoolStats struct {
 	Reloads       int64 `json:"reloads"`
 }
 
-// Pool is the core shard router. It resolves (userID, spaceID) pairs to
-// *sql.DB connections using a catalog database and registered factories.
+// Pool is the core shard router. It resolves dossierIDs to *sql.DB connections
+// using a catalog database and registered factories.
 type Pool struct {
 	dataDir   string
 	catalogDB *sql.DB
 	factories map[string]ShardFactory
 
 	mu        sync.RWMutex
-	conns     map[shardKey]*entry
-	shardSnap map[shardKey]shard
+	conns     map[string]*entry // keyed by dossierID
+	shardSnap map[string]shard  // keyed by dossierID
 
 	idleTimeout time.Duration
 	maxOpen     int

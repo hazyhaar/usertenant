@@ -1,19 +1,20 @@
+// CLAUDE:SUMMARY Sentinel errors for pool, shard, and factory failure conditions.
 package tenant
 
 import "errors"
 
 var (
-	// ErrSpaceNotFound is returned when the requested space does not exist in the catalog.
-	ErrSpaceNotFound = errors.New("tenant: space not found in catalog")
+	// ErrShardNotFound is returned when the requested shard does not exist in the catalog.
+	ErrShardNotFound = errors.New("tenant: shard not found in catalog")
 
-	// ErrSpaceArchived is returned when the requested space has been archived.
-	ErrSpaceArchived = errors.New("tenant: space is archived")
+	// ErrShardArchived is returned when the requested shard has been archived.
+	ErrShardArchived = errors.New("tenant: shard is archived")
 
-	// ErrSpaceDeleted is returned when the requested space has been deleted.
-	ErrSpaceDeleted = errors.New("tenant: space is deleted")
+	// ErrShardDeleted is returned when the requested shard has been deleted.
+	ErrShardDeleted = errors.New("tenant: shard is deleted")
 
-	// ErrSpaceUnavailable is returned by the noop factory for disabled spaces.
-	ErrSpaceUnavailable = errors.New("tenant: space is unavailable")
+	// ErrShardUnavailable is returned by the noop factory for disabled shards.
+	ErrShardUnavailable = errors.New("tenant: shard is unavailable")
 
 	// ErrPoolExhausted is returned when maxOpen connections are reached and no idle
 	// connection can be evicted.
@@ -28,4 +29,10 @@ var (
 
 	// ErrPoolClosed is returned when operations are attempted on a closed pool.
 	ErrPoolClosed = errors.New("tenant: pool is closed")
+
+	// Legacy aliases — kept so existing imports don't break during migration.
+	ErrSpaceNotFound    = ErrShardNotFound
+	ErrSpaceArchived    = ErrShardArchived
+	ErrSpaceDeleted     = ErrShardDeleted
+	ErrSpaceUnavailable = ErrShardUnavailable
 )

@@ -1,3 +1,4 @@
+// CLAUDE:SUMMARY HTTP handler for pool administration: list shards, pool stats, update strategy.
 package tenant
 
 import (
@@ -10,10 +11,10 @@ import (
 // AdminHandler returns an http.Handler that exposes pool administration
 // endpoints:
 //
-//	GET  /shards              — list all shards
-//	GET  /shards/{userID}     — list shards for a user
-//	GET  /pool/stats          — pool statistics
-//	POST /shards/{userID}/{spaceID}/strategy — update shard strategy
+//	GET  /shards                       — list all shards
+//	GET  /shards/{dossierID}           — get a single shard
+//	GET  /pool/stats                   — pool statistics
+//	POST /shards/{dossierID}/strategy  — update shard strategy
 func AdminHandler(pool *Pool) http.Handler {
 	mux := http.NewServeMux()
 
@@ -31,27 +32,22 @@ func AdminHandler(pool *Pool) http.Handler {
 		writeJSON(w, http.StatusOK, shards)
 	})
 
-	mux.HandleFunc("GET /shards/{userID}", func(w http.ResponseWriter, r *http.Request) {
-		userID := r.PathValue("userID")
+	mux.HandleFunc("GET /shards/{dossierID}", func(w http.ResponseWriter, r *http.Request) {
+		dossierID := r.PathValue("dossierID")
 
 		pool.mu.RLock()
-		var shards []shard
-		for _, s := range pool.shardSnap {
-			if s.UserID == userID {
-				shards = append(shards, s)
-			}
-		}
+		s, ok := pool.shardSnap[dossierID]
 		pool.mu.RUnlock()
 
-		if shards == nil {
-			shards = []shard{}
+		if !ok {
+			http.Error(w, "shard not found", http.StatusNotFound)
+			return
 		}
-		writeJSON(w, http.StatusOK, shards)
+		writeJSON(w, http.StatusOK, s)
 	})
 
-	mux.HandleFunc("POST /shards/{userID}/{spaceID}/strategy", func(w http.ResponseWriter, r *http.Request) {
-		userID := r.PathValue("userID")
-		spaceID := r.PathValue("spaceID")
+	mux.HandleFunc("POST /shards/{dossierID}/strategy", func(w http.ResponseWriter, r *http.Request) {
+		dossierID := r.PathValue("dossierID")
 
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
@@ -75,7 +71,7 @@ func AdminHandler(pool *Pool) http.Handler {
 			return
 		}
 
-		if err := pool.SetStrategy(r.Context(), userID, spaceID, req.Strategy, req.Endpoint, req.Config); err != nil {
+		if err := pool.SetStrategy(r.Context(), dossierID, req.Strategy, req.Endpoint, req.Config); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

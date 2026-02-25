@@ -1,3 +1,4 @@
+// CLAUDE:SUMMARY Opens SQLite databases with sensible default PRAGMAs (WAL, busy_timeout, foreign_keys).
 // Package dbopen provides utilities for opening SQLite databases with
 // sensible defaults.
 package dbopen

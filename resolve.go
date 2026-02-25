@@ -1,3 +1,4 @@
+// CLAUDE:SUMMARY Shard resolution with cache-first lookup, LRU eviction, and optional change-watching.
 package tenant
 
 import (
@@ -9,24 +10,23 @@ import (
 	"github.com/hazyhaar/usertenant/watch"
 )
 
-// Resolve returns the *sql.DB for the given (userID, spaceID) pair. It uses
-// a cache-first approach: if a connection is already open, it returns it
-// immediately. Otherwise it looks up the shard in the in-memory snapshot,
-// calls the appropriate factory, and caches the result.
+// Resolve returns the *sql.DB for the given dossierID. It uses a cache-first
+// approach: if a connection is already open, it returns it immediately.
+// Otherwise it looks up the shard in the in-memory snapshot, calls the
+// appropriate factory, and caches the result.
 //
 // Resolve never reads from _catalog.db directly. The snapshot is maintained
 // by Watch/Reload.
-func (p *Pool) Resolve(ctx context.Context, userID, spaceID string) (*sql.DB, error) {
+func (p *Pool) Resolve(ctx context.Context, dossierID string) (*sql.DB, error) {
 	if p.closed.Load() {
 		return nil, ErrPoolClosed
 	}
 
 	p.totalResolves.Add(1)
-	key := shardKey{UserID: userID, SpaceID: spaceID}
 
 	// 1. Fast path: RLock, check cache.
 	p.mu.RLock()
-	if e, ok := p.conns[key]; ok {
+	if e, ok := p.conns[dossierID]; ok {
 		e.lastUsed.Store(time.Now().UnixMilli())
 		p.mu.RUnlock()
 		p.cacheHits.Add(1)
@@ -38,19 +38,19 @@ func (p *Pool) Resolve(ctx context.Context, userID, spaceID string) (*sql.DB, er
 
 	// 2. Check snapshot for shard metadata.
 	p.mu.RLock()
-	s, ok := p.shardSnap[key]
+	s, ok := p.shardSnap[dossierID]
 	p.mu.RUnlock()
 	if !ok {
-		return nil, ErrSpaceNotFound
+		return nil, ErrShardNotFound
 	}
 
 	// Check status.
 	switch s.Status {
 	case "deleted":
-		return nil, ErrSpaceDeleted
+		return nil, ErrShardDeleted
 	case "archived":
 		if s.Strategy != "archived" {
-			return nil, ErrSpaceArchived
+			return nil, ErrShardArchived
 		}
 		// If strategy is "archived", let the factory handle it.
 	}
@@ -60,7 +60,7 @@ func (p *Pool) Resolve(ctx context.Context, userID, spaceID string) (*sql.DB, er
 	defer p.mu.Unlock()
 
 	// Double-check: another goroutine may have created it.
-	if e, ok := p.conns[key]; ok {
+	if e, ok := p.conns[dossierID]; ok {
 		e.lastUsed.Store(time.Now().UnixMilli())
 		return e.db, nil
 	}
@@ -78,7 +78,7 @@ func (p *Pool) Resolve(ctx context.Context, userID, spaceID string) (*sql.DB, er
 		return nil, fmt.Errorf("%w: %s", ErrFactoryNotFound, s.Strategy)
 	}
 
-	db, closeFn, err := factory(p.dataDir, s.UserID, s.SpaceID, s.Endpoint, s.Config)
+	db, closeFn, err := factory(p.dataDir, s.ID, s.Endpoint, s.Config)
 	if err != nil {
 		p.factoryErrors.Add(1)
 		return nil, fmt.Errorf("%w: %v", ErrFactoryFailed, err)
@@ -91,7 +91,7 @@ func (p *Pool) Resolve(ctx context.Context, userID, spaceID string) (*sql.DB, er
 		strategy: s.Strategy,
 	}
 	e.lastUsed.Store(time.Now().UnixMilli())
-	p.conns[key] = e
+	p.conns[dossierID] = e
 
 	return db, nil
 }
@@ -103,16 +103,14 @@ func (p *Pool) Resolve(ctx context.Context, userID, spaceID string) (*sql.DB, er
 // The watcher lifecycle is tied to the connection entry: if the entry is
 // evicted, reloaded, or the pool is closed, the watcher is cancelled via
 // context cancellation.
-func (p *Pool) ResolveWithWatch(ctx context.Context, userID, spaceID string, interval time.Duration, onChange func() error) (*sql.DB, error) {
-	db, err := p.Resolve(ctx, userID, spaceID)
+func (p *Pool) ResolveWithWatch(ctx context.Context, dossierID string, interval time.Duration, onChange func() error) (*sql.DB, error) {
+	db, err := p.Resolve(ctx, dossierID)
 	if err != nil {
 		return nil, err
 	}
 
-	key := shardKey{UserID: userID, SpaceID: spaceID}
-
 	p.mu.Lock()
-	e, ok := p.conns[key]
+	e, ok := p.conns[dossierID]
 	if !ok {
 		p.mu.Unlock()
 		return db, nil
@@ -131,7 +129,7 @@ func (p *Pool) ResolveWithWatch(ctx context.Context, userID, spaceID string, int
 	w := watch.New(db, interval, onChange, p.logger)
 	go func() {
 		if err := w.Run(watchCtx); err != nil && watchCtx.Err() == nil {
-			p.logger.Error("tenant: watcher failed", "user_id", userID, "space_id", spaceID, "error", err)
+			p.logger.Error("tenant: watcher failed", "dossier_id", dossierID, "error", err)
 		}
 	}()
 
@@ -142,7 +140,7 @@ func (p *Pool) ResolveWithWatch(ctx context.Context, userID, spaceID string, int
 // Must be called with p.mu held (write lock). Returns true if a connection was
 // evicted, false if all connections are too recent.
 func (p *Pool) evictOldestLocked() bool {
-	var oldestKey shardKey
+	var oldestKey string
 	var oldestTime int64 = 1<<63 - 1 // max int64
 
 	for k, e := range p.conns {
@@ -164,7 +162,7 @@ func (p *Pool) evictOldestLocked() bool {
 
 // closeEntryLocked closes and removes an entry from the pool.
 // Must be called with p.mu held (write lock).
-func (p *Pool) closeEntryLocked(key shardKey) {
+func (p *Pool) closeEntryLocked(key string) {
 	e, ok := p.conns[key]
 	if !ok {
 		return

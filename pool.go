@@ -1,3 +1,4 @@
+// CLAUDE:SUMMARY Pool constructor, factory registration, stats snapshot, and graceful shutdown.
 package tenant
 
 import (
@@ -16,8 +17,8 @@ func New(dataDir string, catalogDB *sql.DB, opts ...Option) (*Pool, error) {
 		dataDir:     dataDir,
 		catalogDB:   catalogDB,
 		factories:   make(map[string]ShardFactory),
-		conns:       make(map[shardKey]*entry),
-		shardSnap:   make(map[shardKey]shard),
+		conns:       make(map[string]*entry),
+		shardSnap:   make(map[string]shard),
 		idleTimeout: 5 * time.Minute,
 		maxOpen:     256,
 		logger:      slog.Default(),

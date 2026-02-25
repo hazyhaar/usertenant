@@ -1,3 +1,4 @@
+// CLAUDE:SUMMARY Catalog DDL (shards table) and InitCatalog bootstrap function.
 package tenant
 
 import (
@@ -7,16 +8,9 @@ import (
 )
 
 const catalogDDL = `
-CREATE TABLE IF NOT EXISTS users (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL DEFAULT '',
-    status     TEXT NOT NULL DEFAULT 'active',
-    created_at INTEGER NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS shards (
-    user_id    TEXT NOT NULL,
-    space_id   TEXT NOT NULL,
+    id         TEXT PRIMARY KEY,
+    owner_id   TEXT NOT NULL DEFAULT '',
     name       TEXT NOT NULL DEFAULT '',
     strategy   TEXT NOT NULL DEFAULT 'local',
     endpoint   TEXT NOT NULL DEFAULT '',
@@ -24,16 +18,15 @@ CREATE TABLE IF NOT EXISTS shards (
     status     TEXT NOT NULL DEFAULT 'active',
     size_bytes INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    PRIMARY KEY (user_id, space_id)
+    updated_at INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_shards_user ON shards(user_id);
+CREATE INDEX IF NOT EXISTS idx_shards_owner ON shards(owner_id);
 CREATE INDEX IF NOT EXISTS idx_shards_status ON shards(status);
 `
 
-// InitCatalog creates the users and shards tables in the catalog database
-// if they do not already exist.
+// InitCatalog creates the shards table in the catalog database
+// if it does not already exist.
 func InitCatalog(ctx context.Context, db *sql.DB) error {
 	_, err := db.ExecContext(ctx, catalogDDL)
 	if err != nil {

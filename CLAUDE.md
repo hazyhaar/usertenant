@@ -1,13 +1,45 @@
-# CLAUDE.md — usertenant
+# usertenant
 
-> **Règle n°1** — Un bug trouvé en audit mais pas par un test est d'abord une faille de test. Écrire le test rouge, puis fixer. Pas de fix sans test.
+Responsabilité: Bibliothèque Go de tenant routing avec pool de connexions SQLite shardées — un fichier SQLite par dossier (dossierID = clé universelle).
+Module: `github.com/hazyhaar/usertenant`
+Repo: `github.com/hazyhaar/usertenant` (privé)
 
-## Ce que c'est
+Dépend de: `modernc.org/sqlite` uniquement
+Dépendants: `chrc` (veille)
 
-Bibliothèque Go de tenant routing avec pool de connexions SQLite shardées. Gère l'isolation multi-tenant via un fichier SQLite par tenant.
+## API publique
 
-**Module** : `github.com/hazyhaar/usertenant`
-**Repo** : `github.com/hazyhaar/usertenant` (privé)
+| Méthode | Signature |
+|---------|-----------|
+| `Resolve` | `(ctx, dossierID) → (*sql.DB, error)` |
+| `ResolveWithWatch` | `(ctx, dossierID, interval, onChange) → (*sql.DB, error)` |
+| `CreateShard` | `(ctx, dossierID, ownerID, name) → error` |
+| `DeleteShard` | `(ctx, dossierID) → error` |
+| `SetStrategy` | `(ctx, dossierID, strategy, endpoint, config) → error` |
+
+Legacy aliases : `CreateSpace`, `DeleteSpace` (redirigent vers CreateShard/DeleteShard).
+
+## Schema catalog
+
+```sql
+CREATE TABLE shards (
+    id TEXT PRIMARY KEY,         -- dossierID (UUID v7)
+    owner_id TEXT NOT NULL,      -- audit only
+    name, strategy, endpoint, config, status, size_bytes, created_at, updated_at
+);
+```
+
+Pas de table `users` — l'auth est gérée par le SaaS, pas par usertenant.
+
+## Layout fichiers
+
+`{dataDir}/{dossierID}.db` — flat, un fichier par shard.
+
+## Types clés
+
+- `Pool` — pool de connexions, cache LRU, reaper idle
+- `ShardFactory` — `func(dataDir, dossierID, endpoint string, config json.RawMessage) (*sql.DB, func(), error)`
+- `shard` — metadata snapshot (ID, OwnerID, Strategy, Status, ...)
 
 ## Build / Test
 
@@ -16,9 +48,15 @@ CGO_ENABLED=0 go build ./...
 go test ./... -count=1
 ```
 
-## Particularités
+## Invariants
 
-- Un fichier SQLite par tenant (sharding)
-- Pool de connexions avec reaper pour cleanup
-- Hot-reload de config tenant
-- Dépend uniquement de `modernc.org/sqlite`
+- Un fichier SQLite par dossier (sharding strict, layout flat)
+- Pool avec reaper pour cleanup automatique
+- Hot-reload de config via PRAGMA data_version
+- `dossierID` est la seule clé de routing (pas de composite)
+
+## NE PAS
+
+- Partager un fichier SQLite entre dossiers
+- Utiliser `mattn/go-sqlite3` (toujours `modernc.org/sqlite`)
+- Utiliser `(userID, spaceID)` — API migrée vers `dossierID` seul
