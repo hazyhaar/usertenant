@@ -24,7 +24,9 @@ func (p *Pool) CreateShard(ctx context.Context, dossierID, ownerID, name string)
 		return fmt.Errorf("tenant: create shard: %w", err)
 	}
 
-	return nil
+	// Reload snapshot so that Resolve sees the new shard immediately.
+	// Watch (PRAGMA data_version) does not detect same-connection writes.
+	return p.Reload(ctx)
 }
 
 // SetStrategy updates a shard's routing strategy, endpoint, and config.
@@ -49,7 +51,7 @@ func (p *Pool) SetStrategy(ctx context.Context, dossierID, strategy, endpoint st
 		return ErrShardNotFound
 	}
 
-	return nil
+	return p.Reload(ctx)
 }
 
 // DeleteShard marks a shard as deleted, closes its connection if open, and
@@ -81,7 +83,7 @@ func (p *Pool) DeleteShard(ctx context.Context, dossierID string) error {
 	_ = os.Remove(path + "-wal")
 	_ = os.Remove(path + "-shm")
 
-	return nil
+	return p.Reload(ctx)
 }
 
 // Legacy aliases for backward compatibility during migration.
