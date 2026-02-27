@@ -96,5 +96,12 @@ func Open(path string, opts ...Option) (*sql.DB, error) {
 		return nil, fmt.Errorf("dbopen: open %s: %w", path, err)
 	}
 
+	// Force a connection so the file is created and pragmas are applied.
+	// Without this, sql.Open is lazy — the file doesn't exist until the first query.
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("dbopen: ping %s: %w", path, err)
+	}
+
 	return db, nil
 }
