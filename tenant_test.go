@@ -58,7 +58,8 @@ func TestInitCatalog(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := InitCatalog(context.Background(), db); err != nil {
+	err = InitCatalog(context.Background(), db)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -70,7 +71,8 @@ func TestInitCatalog(t *testing.T) {
 	}
 
 	// Idempotent: calling again should not error.
-	if err := InitCatalog(context.Background(), db); err != nil {
+	err = InitCatalog(context.Background(), db)
+	if err != nil {
 		t.Fatalf("second init should be idempotent: %v", err)
 	}
 }
@@ -90,7 +92,8 @@ func TestPoolNewAndClose(t *testing.T) {
 		t.Errorf("expected 0 open conns, got %d", stats.OpenConns)
 	}
 
-	if err := pool.Close(); err != nil {
+	err = pool.Close()
+	if err != nil {
 		t.Fatalf("close pool: %v", err)
 	}
 
@@ -123,7 +126,8 @@ func TestResolve_ByDossierID(t *testing.T) {
 
 	// Verify the .db file was created (flat layout).
 	path := filepath.Join(dataDir, "dossier-001.db")
-	if _, err := os.Stat(path); err != nil {
+	_, err = os.Stat(path)
+	if err != nil {
 		t.Fatalf("expected .db file at %s: %v", path, err)
 	}
 
@@ -236,11 +240,13 @@ func TestCreateShard_And_Resolve(t *testing.T) {
 
 	ctx := context.Background()
 
-	if err := pool.CreateShard(ctx, "dossier-a", "owner-1", "My Dossier"); err != nil {
+	err = pool.CreateShard(ctx, "dossier-a", "owner-1", "My Dossier")
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := pool.Reload(ctx); err != nil {
+	err = pool.Reload(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -254,7 +260,8 @@ func TestCreateShard_And_Resolve(t *testing.T) {
 
 	// Verify the flat path.
 	path := filepath.Join(dataDir, "dossier-a.db")
-	if _, err := os.Stat(path); err != nil {
+	_, err = os.Stat(path)
+	if err != nil {
 		t.Fatalf("expected .db file at %s: %v", path, err)
 	}
 }
@@ -273,21 +280,26 @@ func TestDeleteShard(t *testing.T) {
 	ctx := context.Background()
 
 	// Create, reload, resolve (creates the file).
-	if err := pool.CreateShard(ctx, "dossier-del", "owner-1", "Delete Me"); err != nil {
+	err = pool.CreateShard(ctx, "dossier-del", "owner-1", "Delete Me")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Reload(ctx); err != nil {
+	err = pool.Reload(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Resolve(ctx, "dossier-del"); err != nil {
+	_, err = pool.Resolve(ctx, "dossier-del")
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Delete.
-	if err := pool.DeleteShard(ctx, "dossier-del"); err != nil {
+	err = pool.DeleteShard(ctx, "dossier-del")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Reload(ctx); err != nil {
+	err = pool.Reload(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -334,19 +346,22 @@ func TestSetStrategy(t *testing.T) {
 
 	ctx := context.Background()
 
-	if err := pool.CreateShard(ctx, "dossier-strat", "owner-1", "test"); err != nil {
+	err = pool.CreateShard(ctx, "dossier-routing", "owner-1", "test")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Reload(ctx); err != nil {
+	err = pool.Reload(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := pool.SetStrategy(ctx, "dossier-strat", "readonly", "", nil); err != nil {
+	err = pool.SetStrategy(ctx, "dossier-routing", "readonly", "", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	var strategy string
-	err = catalogDB.QueryRow("SELECT strategy FROM shards WHERE id = 'dossier-strat'").Scan(&strategy)
+	err = catalogDB.QueryRow("SELECT strategy FROM shards WHERE id = 'dossier-routing'").Scan(&strategy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +439,8 @@ func TestReloadDiff(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := pool.Reload(context.Background()); err != nil {
+	err = pool.Reload(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -457,7 +473,8 @@ func TestReload_PicksUpNewShards(t *testing.T) {
 	// Insert directly into catalog.
 	insertShard(t, catalogDB, "new-shard", "local")
 
-	if err := pool.Reload(context.Background()); err != nil {
+	err = pool.Reload(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -483,15 +500,18 @@ func TestReloadRemovesShard(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Resolve(context.Background(), "removable"); err != nil {
+	_, err = pool.Resolve(context.Background(), "removable")
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := catalogDB.Exec("DELETE FROM shards WHERE id = 'removable'"); err != nil {
+	_, err = catalogDB.Exec("DELETE FROM shards WHERE id = 'removable'")
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := pool.Reload(context.Background()); err != nil {
+	err = pool.Reload(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -522,7 +542,8 @@ func TestLocalFactory_FlatPath(t *testing.T) {
 	}
 
 	path := filepath.Join(dataDir, "my-dossier-id.db")
-	if _, err := os.Stat(path); err != nil {
+	_, err = os.Stat(path)
+	if err != nil {
 		t.Fatalf("expected file at %s: %v", path, err)
 	}
 }
@@ -545,7 +566,8 @@ func TestRegisterFactory(t *testing.T) {
 		return localFactory(dataDir, dossierID, endpoint, config)
 	})
 
-	if err := pool.Reload(context.Background()); err != nil {
+	err = pool.Reload(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -735,7 +757,7 @@ func TestAdminSetStrategy(t *testing.T) {
 	// WHAT: POST /shards/{dossierID}/strategy updates strategy.
 	// WHY: Admin must be able to change routing strategy.
 	dataDir, catalogDB := testCatalog(t)
-	insertShard(t, catalogDB, "strat-admin", "local")
+	insertShard(t, catalogDB, "strategy-admin", "local")
 
 	pool, err := New(dataDir, catalogDB)
 	if err != nil {
@@ -746,7 +768,7 @@ func TestAdminSetStrategy(t *testing.T) {
 	handler := AdminHandler(pool)
 
 	body := `{"strategy": "readonly", "endpoint": ""}`
-	req := httptest.NewRequest("POST", "/shards/strat-admin/strategy", strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/shards/strategy-admin/strategy", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -755,7 +777,7 @@ func TestAdminSetStrategy(t *testing.T) {
 	}
 
 	var strategy string
-	err = catalogDB.QueryRow("SELECT strategy FROM shards WHERE id = 'strat-admin'").Scan(&strategy)
+	err = catalogDB.QueryRow("SELECT strategy FROM shards WHERE id = 'strategy-admin'").Scan(&strategy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,10 +800,12 @@ func TestLifecycleFullCycle(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Create shard.
-	if err := pool.CreateShard(ctx, "dossier-full", "owner-1", "Workspace"); err != nil {
+	err = pool.CreateShard(ctx, "dossier-full", "owner-1", "Workspace")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Reload(ctx); err != nil {
+	err = pool.Reload(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -801,10 +825,12 @@ func TestLifecycleFullCycle(t *testing.T) {
 	}
 
 	// 3. Set strategy to readonly.
-	if err := pool.SetStrategy(ctx, "dossier-full", "readonly", "", nil); err != nil {
+	err = pool.SetStrategy(ctx, "dossier-full", "readonly", "", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Reload(ctx); err != nil {
+	err = pool.Reload(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -830,16 +856,104 @@ func TestLifecycleFullCycle(t *testing.T) {
 	}
 
 	// 4. Delete.
-	if err := pool.DeleteShard(ctx, "dossier-full"); err != nil {
+	err = pool.DeleteShard(ctx, "dossier-full")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Reload(ctx); err != nil {
+	err = pool.Reload(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	_, err = pool.Resolve(ctx, "dossier-full")
 	if !errors.Is(err, ErrShardDeleted) {
 		t.Errorf("expected ErrShardDeleted, got %v", err)
+	}
+}
+
+// --- EnsureShard tests ---
+
+func TestEnsureShard_Idempotent(t *testing.T) {
+	// WHAT: EnsureShard creates the shard on first call, no-ops on second.
+	// WHY: Services that don't know if the catalog entry exists (e.g. siftrag) must not error on duplicates.
+	dataDir, catalogDB := testCatalog(t)
+
+	pool, err := New(dataDir, catalogDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	// First call: creates the shard.
+	err = pool.EnsureShard(ctx, "dossier-ensure", "owner-1", "My Dossier")
+	if err != nil {
+		t.Fatalf("first EnsureShard: %v", err)
+	}
+
+	// Second call: same PK, should not error.
+	err = pool.EnsureShard(ctx, "dossier-ensure", "owner-1", "My Dossier")
+	if err != nil {
+		t.Fatalf("second EnsureShard: %v", err)
+	}
+
+	// Verify only one row exists.
+	var count int
+	err = catalogDB.QueryRow("SELECT COUNT(*) FROM shards WHERE id = 'dossier-ensure'").Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 shard row, got %d", count)
+	}
+
+	// Verify Resolve works after EnsureShard.
+	db, err := pool.Resolve(ctx, "dossier-ensure")
+	if err != nil {
+		t.Fatalf("resolve after EnsureShard: %v", err)
+	}
+	if db == nil {
+		t.Fatal("expected non-nil db")
+	}
+}
+
+func TestEnsureShard_DoesNotOverwrite(t *testing.T) {
+	// WHAT: EnsureShard on existing shard does not overwrite name/owner.
+	// WHY: INSERT OR IGNORE must not modify existing rows.
+	dataDir, catalogDB := testCatalog(t)
+
+	pool, err := New(dataDir, catalogDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	// Create with original values.
+	err = pool.CreateShard(ctx, "dossier-nooverwrite", "owner-original", "Original Name")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// EnsureShard with different values.
+	err = pool.EnsureShard(ctx, "dossier-nooverwrite", "owner-new", "New Name")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify original values are preserved.
+	var ownerID, name string
+	err = catalogDB.QueryRow("SELECT owner_id, name FROM shards WHERE id = 'dossier-nooverwrite'").Scan(&ownerID, &name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownerID != "owner-original" {
+		t.Errorf("expected owner 'owner-original', got %q", ownerID)
+	}
+	if name != "Original Name" {
+		t.Errorf("expected name 'Original Name', got %q", name)
 	}
 }
 

@@ -19,17 +19,17 @@ func AdminHandler(pool *Pool) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /pool/stats", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, pool.Stats())
+		writeJSON(w, pool.Stats())
 	})
 
 	mux.HandleFunc("GET /shards", func(w http.ResponseWriter, r *http.Request) {
 		pool.mu.RLock()
 		shards := make([]shard, 0, len(pool.shardSnap))
-		for _, s := range pool.shardSnap {
-			shards = append(shards, s)
+		for k := range pool.shardSnap {
+			shards = append(shards, pool.shardSnap[k])
 		}
 		pool.mu.RUnlock()
-		writeJSON(w, http.StatusOK, shards)
+		writeJSON(w, shards)
 	})
 
 	mux.HandleFunc("GET /shards/{dossierID}", func(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +43,7 @@ func AdminHandler(pool *Pool) http.Handler {
 			http.Error(w, "shard not found", http.StatusNotFound)
 			return
 		}
-		writeJSON(w, http.StatusOK, s)
+		writeJSON(w, s)
 	})
 
 	mux.HandleFunc("POST /shards/{dossierID}/strategy", func(w http.ResponseWriter, r *http.Request) {
@@ -82,14 +82,14 @@ func AdminHandler(pool *Pool) http.Handler {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		writeJSON(w, map[string]string{"status": "ok"})
 	})
 
 	return mux
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(v)
 }

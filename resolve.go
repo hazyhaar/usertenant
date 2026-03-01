@@ -60,7 +60,7 @@ func (p *Pool) Resolve(ctx context.Context, dossierID string) (*sql.DB, error) {
 	defer p.mu.Unlock()
 
 	// Double-check: another goroutine may have created it.
-	if e, ok := p.conns[dossierID]; ok {
+	if e, found := p.conns[dossierID]; found {
 		e.lastUsed.Store(time.Now().UnixMilli())
 		return e.db, nil
 	}

@@ -86,6 +86,22 @@ func (p *Pool) DeleteShard(ctx context.Context, dossierID string) error {
 	return p.Reload(ctx)
 }
 
+// EnsureShard creates the shard if it doesn't exist in the catalog.
+// If the shard already exists (same PK), it is a silent no-op.
+// Use this instead of CreateShard when the caller doesn't know whether
+// the shard was already registered (e.g. siftrag dossier creation).
+func (p *Pool) EnsureShard(ctx context.Context, dossierID, ownerID, name string) error {
+	now := time.Now().UnixMilli()
+	_, err := p.catalogDB.ExecContext(ctx,
+		`INSERT OR IGNORE INTO shards (id, owner_id, name, strategy, endpoint, config, status, size_bytes, created_at, updated_at)
+		 VALUES (?, ?, ?, 'local', '', '{}', 'active', 0, ?, ?)`,
+		dossierID, ownerID, name, now, now)
+	if err != nil {
+		return fmt.Errorf("tenant: ensure shard: %w", err)
+	}
+	return p.Reload(ctx)
+}
+
 // Legacy aliases for backward compatibility during migration.
 
 // CreateSpace is a legacy alias. Prefer CreateShard.
