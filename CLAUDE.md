@@ -1,3 +1,5 @@
+> **Schema technique** : voir [`usertenant_schem.md`](usertenant_schem.md) — lecture prioritaire avant tout code source.
+
 # usertenant
 
 Responsabilité: Bibliothèque Go de tenant routing avec pool de connexions SQLite shardées — un fichier SQLite par dossier (dossierID = clé universelle).
