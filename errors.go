@@ -30,6 +30,10 @@ var (
 	// ErrPoolClosed is returned when operations are attempted on a closed pool.
 	ErrPoolClosed = errors.New("tenant: pool is closed")
 
+	// ErrOwnershipMismatch is returned when the caller's ownerID does not match
+	// the shard's recorded owner_id in the catalog snapshot.
+	ErrOwnershipMismatch = errors.New("tenant: ownership mismatch")
+
 	// Legacy aliases — kept so existing imports don't break during migration.
 	ErrSpaceNotFound    = ErrShardNotFound
 	ErrSpaceArchived    = ErrShardArchived

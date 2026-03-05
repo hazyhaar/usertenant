@@ -17,16 +17,39 @@ import (
 //
 // Resolve never reads from _catalog.db directly. The snapshot is maintained
 // by Watch/Reload.
+// CLAUDE:WARN Double-checked lock, may evict oldest connection, calls ShardFactory (filesystem/network).
 func (p *Pool) Resolve(ctx context.Context, dossierID string) (*sql.DB, error) {
+	return p.resolve(ctx, dossierID, "")
+}
+
+// ResolveWithOwner is like Resolve but verifies that the shard's recorded
+// owner_id matches the provided ownerID. Returns ErrOwnershipMismatch if
+// the owner does not match.
+func (p *Pool) ResolveWithOwner(ctx context.Context, dossierID, ownerID string) (*sql.DB, error) {
+	if ownerID == "" {
+		return nil, fmt.Errorf("tenant: ownerID must not be empty")
+	}
+	return p.resolve(ctx, dossierID, ownerID)
+}
+
+// resolve is the shared implementation for Resolve and ResolveWithOwner.
+// If ownerID is non-empty, ownership is checked against the catalog snapshot.
+func (p *Pool) resolve(ctx context.Context, dossierID, ownerID string) (*sql.DB, error) {
 	if p.closed.Load() {
 		return nil, ErrPoolClosed
 	}
 
 	p.totalResolves.Add(1)
 
-	// 1. Fast path: RLock, check cache.
+	// 1. Fast path: RLock, check cache + owner.
 	p.mu.RLock()
 	if e, ok := p.conns[dossierID]; ok {
+		if ownerID != "" {
+			if s, snapOK := p.shardSnap[dossierID]; snapOK && s.OwnerID != ownerID {
+				p.mu.RUnlock()
+				return nil, ErrOwnershipMismatch
+			}
+		}
 		e.lastUsed.Store(time.Now().UnixMilli())
 		p.mu.RUnlock()
 		p.cacheHits.Add(1)
@@ -42,6 +65,11 @@ func (p *Pool) Resolve(ctx context.Context, dossierID string) (*sql.DB, error) {
 	p.mu.RUnlock()
 	if !ok {
 		return nil, ErrShardNotFound
+	}
+
+	// Check ownership.
+	if ownerID != "" && s.OwnerID != ownerID {
+		return nil, ErrOwnershipMismatch
 	}
 
 	// Check status.
@@ -103,6 +131,7 @@ func (p *Pool) Resolve(ctx context.Context, dossierID string) (*sql.DB, error) {
 // The watcher lifecycle is tied to the connection entry: if the entry is
 // evicted, reloaded, or the pool is closed, the watcher is cancelled via
 // context cancellation.
+// CLAUDE:WARN Launches watcher goroutine. Silent no-op if already watching.
 func (p *Pool) ResolveWithWatch(ctx context.Context, dossierID string, interval time.Duration, onChange func() error) (*sql.DB, error) {
 	db, err := p.Resolve(ctx, dossierID)
 	if err != nil {
