@@ -1,4 +1,6 @@
 // CLAUDE:SUMMARY Built-in shard factories: local (read-write), readonly, and noop (disabled).
+// CLAUDE:DEPENDS usertenant/dbopen
+// CLAUDE:EXPORTS (package-private)
 package tenant
 
 import (

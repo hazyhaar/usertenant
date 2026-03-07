@@ -1,4 +1,6 @@
 // CLAUDE:SUMMARY Sentinel errors for pool, shard, and factory failure conditions.
+// CLAUDE:DEPENDS
+// CLAUDE:EXPORTS ErrShardNotFound, ErrShardArchived, ErrNoFactory, ErrPoolClosed
 package tenant
 
 import "errors"

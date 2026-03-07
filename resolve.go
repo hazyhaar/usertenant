@@ -1,10 +1,13 @@
 // CLAUDE:SUMMARY Shard resolution with cache-first lookup, LRU eviction, and optional change-watching.
+// CLAUDE:DEPENDS usertenant/watch
+// CLAUDE:EXPORTS Resolve, ResolveWithOwner, ResolveWithWatch
 package tenant
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/hazyhaar/usertenant/watch"
@@ -53,6 +56,9 @@ func (p *Pool) resolve(ctx context.Context, dossierID, ownerID string) (*sql.DB,
 		e.lastUsed.Store(time.Now().UnixMilli())
 		p.mu.RUnlock()
 		p.cacheHits.Add(1)
+		if p.onShardEvent != nil {
+			p.onShardEvent("shard.resolved", dossierID)
+		}
 		return e.db, nil
 	}
 	p.mu.RUnlock()
@@ -109,7 +115,14 @@ func (p *Pool) resolve(ctx context.Context, dossierID, ownerID string) (*sql.DB,
 	db, closeFn, err := factory(p.dataDir, s.ID, s.Endpoint, s.Config)
 	if err != nil {
 		p.factoryErrors.Add(1)
+		if p.onShardEvent != nil {
+			p.onShardEvent("shard.error", dossierID, slog.String("error", err.Error()))
+		}
 		return nil, fmt.Errorf("%w: %v", ErrFactoryFailed, err)
+	}
+
+	if p.onShardEvent != nil {
+		p.onShardEvent("shard.opened", dossierID, slog.String("strategy", s.Strategy))
 	}
 
 	// 6. Store in cache.
@@ -186,6 +199,9 @@ func (p *Pool) evictOldestLocked() bool {
 
 	p.closeEntryLocked(oldestKey)
 	p.evictions.Add(1)
+	if p.onShardEvent != nil {
+		p.onShardEvent("shard.evicted", oldestKey, slog.String("reason", "lru"))
+	}
 	return true
 }
 

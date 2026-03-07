@@ -1,4 +1,6 @@
 // CLAUDE:SUMMARY Core types: Pool struct, ShardFactory, shard metadata, connection entry, and functional options.
+// CLAUDE:DEPENDS
+// CLAUDE:EXPORTS Pool, ShardFactory, PoolStats, Option, WithIdleTimeout, WithMaxOpen, WithLogger, WithShardHook
 package tenant
 
 import (
@@ -78,6 +80,8 @@ type Pool struct {
 	factoryErrors atomic.Int64
 	reloads       atomic.Int64
 
+	onShardEvent func(op string, dossierID string, attrs ...slog.Attr)
+
 	closed   atomic.Bool
 	closeCh  chan struct{}
 	closeOnce sync.Once
@@ -108,5 +112,13 @@ func WithMaxOpen(n int) Option {
 func WithLogger(l *slog.Logger) Option {
 	return func(p *Pool) {
 		p.logger = l
+	}
+}
+
+// WithShardHook sets a callback invoked on shard lifecycle events.
+// The hook receives an operation name, dossier ID, and optional attributes.
+func WithShardHook(hook func(string, string, ...slog.Attr)) Option {
+	return func(p *Pool) {
+		p.onShardEvent = hook
 	}
 }

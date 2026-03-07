@@ -1,4 +1,6 @@
 // CLAUDE:SUMMARY Pool constructor, factory registration, stats snapshot, and graceful shutdown.
+// CLAUDE:DEPENDS
+// CLAUDE:EXPORTS New, RegisterFactory, Stats, Close
 package tenant
 
 import (
@@ -12,6 +14,7 @@ import (
 // New creates a new Pool. It opens the catalog database, loads the initial
 // shard snapshot, and registers the built-in factories (local, readonly, noop).
 // The caller must call Close() when done.
+// CLAUDE:WARN Launches reaper goroutine. Caller MUST call Close() to stop it.
 func New(dataDir string, catalogDB *sql.DB, opts ...Option) (*Pool, error) {
 	p := &Pool{
 		dataDir:     dataDir,
@@ -49,6 +52,7 @@ func New(dataDir string, catalogDB *sql.DB, opts ...Option) (*Pool, error) {
 // This must be called before Watch/Reload so that the factory is available
 // when connections are created. It overwrites any existing factory for the
 // same strategy.
+// CLAUDE:WARN Takes mu.Lock, mutates factories map. Must be called before Watch/Reload.
 func (p *Pool) RegisterFactory(strategy string, f ShardFactory) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -73,6 +77,7 @@ func (p *Pool) Stats() PoolStats {
 }
 
 // Close shuts down the pool: closes all open connections and stops the reaper.
+// CLAUDE:WARN Takes mu.Lock, closes all connections and watchers. Always returns nil.
 func (p *Pool) Close() error {
 	var firstErr error
 	p.closeOnce.Do(func() {

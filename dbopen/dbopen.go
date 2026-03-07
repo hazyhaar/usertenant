@@ -1,4 +1,7 @@
 // CLAUDE:SUMMARY Opens SQLite databases with sensible default PRAGMAs (WAL, busy_timeout, foreign_keys).
+// CLAUDE:DEPENDS
+// CLAUDE:EXPORTS Open, Option, WithReadOnly, WithBusyTimeout, WithJournalMode, WithForeignKeys, WithPragma
+//
 // Package dbopen provides utilities for opening SQLite databases with
 // sensible defaults.
 package dbopen
@@ -81,6 +84,7 @@ func Open(path string, opts ...Option) (*sql.DB, error) {
 	dsn := path + "?_txlock=immediate"
 	dsn += fmt.Sprintf("&_pragma=busy_timeout(%d)", o.BusyTimeout)
 	dsn += fmt.Sprintf("&_pragma=journal_mode(%s)", o.JournalMode)
+	dsn += "&_pragma=synchronous(NORMAL)"
 	if o.ForeignKeys {
 		dsn += "&_pragma=foreign_keys(1)"
 	}

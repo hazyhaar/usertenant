@@ -1,10 +1,13 @@
 // CLAUDE:SUMMARY Catalog reload with snapshot diffing and polling Watch loop via PRAGMA data_version.
+// CLAUDE:DEPENDS
+// CLAUDE:EXPORTS Reload, Watch
 package tenant
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -14,6 +17,7 @@ import (
 //
 // New or unchanged shards are simply stored in the snapshot; their connections
 // are created lazily on the next Resolve().
+// CLAUDE:WARN Takes mu.Lock, replaces snapshot, closes connections with changed fingerprint. Reads catalog DB.
 func (p *Pool) Reload(ctx context.Context) error {
 	rows, err := p.catalogDB.QueryContext(ctx,
 		`SELECT id, owner_id, name, strategy, endpoint, config, status, size_bytes, created_at, updated_at
@@ -49,6 +53,9 @@ func (p *Pool) Reload(ctx context.Context) error {
 			p.logger.Debug("tenant: shard removed, closing connection",
 				"dossier_id", key)
 			p.closeEntryLocked(key)
+			if p.onShardEvent != nil {
+				p.onShardEvent("shard.evicted", key, slog.String("reason", "catalog_removed"))
+			}
 			continue
 		}
 
@@ -60,6 +67,9 @@ func (p *Pool) Reload(ctx context.Context) error {
 				"dossier_id", key,
 				"old_strategy", e.strategy, "new_strategy", newShard.Strategy)
 			p.closeEntryLocked(key)
+			if p.onShardEvent != nil {
+				p.onShardEvent("shard.evicted", key, slog.String("reason", "strategy_changed"))
+			}
 		}
 	}
 
@@ -71,6 +81,7 @@ func (p *Pool) Reload(ctx context.Context) error {
 // Watch starts a polling loop that checks PRAGMA data_version on the catalog
 // database and calls Reload when a change is detected. It blocks until ctx
 // is cancelled.
+// CLAUDE:WARN BLOCKING — runs until ctx cancel. Must be called in a goroutine. Silent continue on poll errors.
 func (p *Pool) Watch(ctx context.Context, interval time.Duration) error {
 	var lastVersion int64
 	if err := p.catalogDB.QueryRowContext(ctx, "PRAGMA data_version").Scan(&lastVersion); err != nil {

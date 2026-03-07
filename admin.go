@@ -1,4 +1,6 @@
 // CLAUDE:SUMMARY HTTP handler for pool administration: list shards, pool stats, update strategy.
+// CLAUDE:DEPENDS
+// CLAUDE:EXPORTS AdminHandler
 package tenant
 
 import (

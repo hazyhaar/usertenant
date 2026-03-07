@@ -1,7 +1,12 @@
 // CLAUDE:SUMMARY Background goroutine that evicts idle shard connections exceeding the timeout.
+// CLAUDE:DEPENDS
+// CLAUDE:EXPORTS (package-private)
 package tenant
 
-import "time"
+import (
+	"log/slog"
+	"time"
+)
 
 // reapLoop runs in a goroutine and periodically evicts idle connections.
 // It runs every idleTimeout/2 and closes connections whose lastUsed time
@@ -26,6 +31,7 @@ func (p *Pool) reapLoop() {
 	}
 }
 
+// CLAUDE:WARN Takes mu.Lock, closes idle connections. Entries with active watchers are never reaped.
 func (p *Pool) reap() {
 	now := time.Now().UnixMilli()
 	threshold := p.idleTimeout.Milliseconds()
@@ -46,6 +52,9 @@ func (p *Pool) reap() {
 				"idle_ms", idle)
 			p.closeEntryLocked(key)
 			p.evictions.Add(1)
+			if p.onShardEvent != nil {
+				p.onShardEvent("shard.evicted", key, slog.String("reason", "idle"))
+			}
 		}
 	}
 }

@@ -1,10 +1,13 @@
 // CLAUDE:SUMMARY CRUD operations on shards in the catalog database.
+// CLAUDE:DEPENDS
+// CLAUDE:EXPORTS CreateShard, DeleteShard, SetStrategy, EnsureShard, CreateSpace, DeleteSpace
 package tenant
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -22,6 +25,12 @@ func (p *Pool) CreateShard(ctx context.Context, dossierID, ownerID, name string)
 		dossierID, ownerID, name, now, now)
 	if err != nil {
 		return fmt.Errorf("tenant: create shard: %w", err)
+	}
+
+	if p.onShardEvent != nil {
+		p.onShardEvent("shard.created", dossierID,
+			slog.String("owner_id", ownerID),
+			slog.String("name", name))
 	}
 
 	// Reload snapshot so that Resolve sees the new shard immediately.
@@ -56,6 +65,7 @@ func (p *Pool) SetStrategy(ctx context.Context, dossierID, strategy, endpoint st
 
 // DeleteShard marks a shard as deleted, closes its connection if open, and
 // removes the .db file if the strategy is "local".
+// CLAUDE:WARN Takes mu.Lock, closes connection, deletes .db files from disk. Silent ignore on file removal errors.
 func (p *Pool) DeleteShard(ctx context.Context, dossierID string) error {
 	now := time.Now().UnixMilli()
 
@@ -83,6 +93,10 @@ func (p *Pool) DeleteShard(ctx context.Context, dossierID string) error {
 	_ = os.Remove(path + "-wal")
 	_ = os.Remove(path + "-shm")
 
+	if p.onShardEvent != nil {
+		p.onShardEvent("shard.deleted", dossierID)
+	}
+
 	return p.Reload(ctx)
 }
 
@@ -92,12 +106,19 @@ func (p *Pool) DeleteShard(ctx context.Context, dossierID string) error {
 // the shard was already registered (e.g. siftrag dossier creation).
 func (p *Pool) EnsureShard(ctx context.Context, dossierID, ownerID, name string) error {
 	now := time.Now().UnixMilli()
-	_, err := p.catalogDB.ExecContext(ctx,
+	res, err := p.catalogDB.ExecContext(ctx,
 		`INSERT OR IGNORE INTO shards (id, owner_id, name, strategy, endpoint, config, status, size_bytes, created_at, updated_at)
 		 VALUES (?, ?, ?, 'local', '', '{}', 'active', 0, ?, ?)`,
 		dossierID, ownerID, name, now, now)
 	if err != nil {
 		return fmt.Errorf("tenant: ensure shard: %w", err)
+	}
+	if p.onShardEvent != nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			p.onShardEvent("shard.created", dossierID,
+				slog.String("owner_id", ownerID),
+				slog.String("name", name))
+		}
 	}
 	return p.Reload(ctx)
 }

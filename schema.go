@@ -1,4 +1,6 @@
 // CLAUDE:SUMMARY Catalog DDL (shards table) and InitCatalog bootstrap function.
+// CLAUDE:DEPENDS
+// CLAUDE:EXPORTS InitCatalog
 package tenant
 
 import (
